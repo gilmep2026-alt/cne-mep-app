@@ -328,7 +328,6 @@ tr.clickable:hover td{background:rgba(52,26,77,0.85);color:var(--accent)}
 .reglamento-doc .rm-parrafo{margin-top:10px;padding:10px 14px;background:#f7f0fc;border-left:3px solid #6c0fa3;font-style:italic;font-size:13px}
 .reglamento-doc .rm-footer{text-align:center;margin-top:40px;padding-top:20px;border-top:1px solid #ddd;color:#555;font-size:12px}
 
-/* Bloque de aprobación */
 .aprob-box{
   padding:16px;border-radius:var(--radius-sm);border:1px solid var(--border);
   background:rgba(20,7,32,0.7);margin-top:14px;
@@ -350,8 +349,8 @@ tr.clickable:hover td{background:rgba(52,26,77,0.85);color:var(--accent)}
    CONFIGURACIÓN
 ============================================================ */
 const CONFIG = {
-  USE_POCKETBASE: true,                        // ← ACTIVADO PARA PRODUCCIÓN
-  PB_URL: 'https://pocketbase-railway-production-276e.up.railway.app', // ← TU URL DE RAILWAY
+  USE_POCKETBASE: true,                        
+  PB_URL: 'https://pocketbase-railway-production-276e.up.railway.app',
   COL: { USERS:'users', RECORDS:'records', GALLERY:'gallery', HISTORY:'history', ACTIVE:'active' },
   MIN_BATCH: 3,
   MAX_BATCH: 12,
@@ -566,14 +565,11 @@ const REGLAMENTO_MEP = {
 function esc(s){ return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function now(){ return Date.now(); }
 function uid(){ return 'id_'+Math.random().toString(36).slice(2,10)+Date.now().toString(36); }
-
-// Corregido para manejar ISO strings de PocketBase y números
 function fmtDate(ts){ 
   if (!ts) return '—';
   const d = isNaN(Number(ts)) ? new Date(ts) : new Date(Number(ts));
   return isNaN(d.getTime()) ? '—' : d.toLocaleString('es-VE'); 
 }
-
 function normCI(ci){
   let s = String(ci||'').trim().toUpperCase().replace(/[\s\.\-]/g,'');
   if(!s) return '';
@@ -650,7 +646,6 @@ function compressImage(file, maxW, quality){
    CACHÉ DE FOTOS + LIMPIEZA
 ============================================================ */
 const photoCache = {};
-
 function clearPhotoCache(prefix){
   if(!prefix){ Object.keys(photoCache).forEach(k => delete photoCache[k]); return; }
   Object.keys(photoCache).forEach(k => { if(k.startsWith(prefix)) delete photoCache[k]; });
@@ -752,7 +747,7 @@ function userSessionFromRecord(u){
     rol:u.rol, estado:u.estado||'', municipio:u.municipio||'',
     foto: u.foto ? (typeof u.foto === 'string' ? u.foto : (pb ? pb.files.getUrl(u, u.foto) : '')) : '',
     es_aprobador: !!u.es_aprobador,
-    aprobado: !!u.aprobado // <-- IMPORTANTE
+    aprobado: !!u.aprobado
   };
 }
 
@@ -763,7 +758,6 @@ const Api = {
   async login(ci, pw){
     if(CONFIG.USE_POCKETBASE){
       await pbLoad;
-      // Se asume que el campo identity de la colección es "username" y "ci".
       const auth = await pb.collection(CONFIG.COL.USERS).authWithPassword(normCI(ci), pw);
       const u = auth.record;
       const sess = userSessionFromRecord(u);
@@ -779,20 +773,19 @@ const Api = {
     return sess;
   },
   async register(data, actor){
-    // Si es público (desde login), forzamos aprobado = false
-    let isPublic = !actor;
-    
     if(CONFIG.USE_POCKETBASE){
       await pbLoad;
       const fd = new FormData();
       ['nombre','apellido','telefono','rol','estado','municipio'].forEach(k => fd.append(k, data[k]||''));
       fd.append('ci', normCI(data.ci));
-      fd.append('username', normCI(data.ci));           // identity para login
+      fd.append('username', normCI(data.ci));
       fd.append('password', data.password);
       fd.append('passwordConfirm', data.password);
       fd.append('email', data.email || (normCI(data.ci).toLowerCase().replace(/[^a-z0-9]/g,'')+'@mep.local'));
-      fd.append('es_aprobador', data.es_aprobador ? 'true' : 'false');
-      fd.append('aprobado', 'false'); // <-- NUNCA se aprueba solo
+      fd.append('es_aprobador', data.es_aprobador ? true : false);
+      
+      // CORRECCIÓN CLAVE: Enviar booleano estricto
+      fd.append('aprobado', false); 
       
       if(data._fotoFile) fd.append('foto', data._fotoFile);
       const rec = await pb.collection(CONFIG.COL.USERS).create(fd);
@@ -893,7 +886,6 @@ const Api = {
     if(CONFIG.USE_POCKETBASE){
       await pbLoad;
       const fd = new FormData();
-      // Ignoramos 'created' y 'updated' porque PB los genera auto
       Object.keys(base).forEach(k => { 
         if(k.startsWith('_') || k === 'foto' || k === 'created' || k === 'updated') return; 
         fd.append(k, base[k] ?? ''); 
@@ -1090,7 +1082,8 @@ const state = {
   view:'login', tab:null, user:null,
   batchTipo:null, batchCount:0,
   histFiltro:'hoy', busy:false,
-  userTab:'operativos', registerRole:null,
+  userTab:'pendientes', // Inicia mostrando pendientes para el Master
+  registerRole:null,
   approvalFilter:'pendiente', approvalEstado:'', approvalMunicipio:''
 };
 const app = document.getElementById('app');
@@ -1418,7 +1411,7 @@ function renderDashboard(){
 async function logout(){
   await Api.logout();
   state.user = null; state.tab = null; state.view = 'login';
-  state.batchCount = 0; state.batchTipo = null; state.userTab = 'operativos';
+  state.batchCount = 0; state.batchTipo = null; state.userTab = 'pendientes';
   clearPhotoCache();
   render();
 }
@@ -1747,7 +1740,7 @@ async function guardarFormulario(tipo, id){
   if((state.batchCount || 0) >= CONFIG.MAX_BATCH) return err('Límite de lote alcanzado.');
   const v = k => { const el = document.getElementById('f_' + k + '_' + id); return el ? el.value.trim() : ''; };
   const data = {
-    tipo: tipo, // <-- CAMBIADO de tipo_original a tipo, igual que la colección
+    tipo: tipo,
     nombre: v('nombre'), ci: v('ci'), sexo: v('sexo'), lugar_nac: v('lugar_nac'), fecha_nac: v('fecha_nac'),
     estado_civil: v('estado_civil'), profesion: v('profesion'), oficio: v('oficio'), estado: v('estado'),
     municipio: v('muni'), parroquia: v('parroquia'), sector: v('sector'), residencia: v('residencia'),
@@ -1781,7 +1774,7 @@ async function guardarFormulario(tipo, id){
       const taken = await Api.existsNumero(candidate);
       if(!taken){ numero = candidate; break; }
     }
-    if(!numero) numero = mepRandomSuffix(); // fallback
+    if(!numero) numero = mepRandomSuffix();
     data.numero = numero;
     data.foto = photo.dataUrl;
     data.aprobacion = APROBACION.PENDIENTE;
@@ -1893,7 +1886,7 @@ async function toggleCollapseRO(idx){
 }
 
 /* ============================================================
-   APROBACIONES
+   APROBACIONES (Militantes)
 ============================================================ */
 async function aprobacionesView(){
   if(!Permissions.canApprove(state.user)){
@@ -2252,21 +2245,43 @@ async function imprimirPlanillaIndividual(estado, municipio, ci){
   '</div>');
 }
 
-/* ---------- USUARIOS ---------- */
+/* ============================================================
+   GESTIÓN DE USUARIOS (Lógica Mejorada para Aprobaciones)
+============================================================ */
 async function usuariosView(){
   const actor = state.user;
   const canSeeNacTab = Permissions.canSeeNacionalesTab(actor);
-  if(!canSeeNacTab && state.userTab !== 'operativos') state.userTab = 'operativos';
-  const tab = state.userTab;
   const all = await Api.listUsers();
-  const operativos = all.filter(u => u.rol === Roles.CPR || u.rol === Roles.CPM);
-  const nacionales = all.filter(u => u.rol === Roles.NACIONAL);
+  
+  // Separamos a los usuarios en categorías
+  const pendientes = all.filter(u => !u.aprobado && u.rol !== Roles.MASTER);
+  const operativos = all.filter(u => (u.rol === Roles.CPR || u.rol === Roles.CPM) && u.aprobado);
+  const nacionales = all.filter(u => u.rol === Roles.NACIONAL && u.aprobado);
   const masters = all.filter(u => u.rol === Roles.MASTER);
+
+  // Validar pestaña activa
+  if(!canSeeNacTab && state.userTab !== 'operativos' && state.userTab !== 'pendientes') state.userTab = 'operativos';
+  if(state.userTab === 'nacionales' && !canSeeNacTab) state.userTab = 'operativos';
+  
+  const tab = state.userTab;
   let filtered, btnLabel, btnAs;
-  if(tab === 'nacionales' && canSeeNacTab){ filtered = nacionales; btnLabel = 'Agregar Nacional'; btnAs = Roles.NACIONAL; }
-  else { filtered = operativos; btnLabel = 'Agregar CPR / CPM'; btnAs = Roles.CPR; }
-  const limitNote = (tab === 'nacionales' && nacionales.length >= CONFIG.MAX_NACIONALES)
-    ? '<span class="small" style="margin-left:10px;color:var(--danger)">Límite alcanzado</span>' : '';
+
+  if(tab === 'pendientes') { 
+    filtered = pendientes; 
+    btnLabel = 'Agregar Usuario'; 
+    btnAs = Roles.CPR; 
+  }
+  else if(tab === 'nacionales' && canSeeNacTab) { 
+    filtered = nacionales; 
+    btnLabel = 'Agregar Nacional'; 
+    btnAs = Roles.NACIONAL; 
+  }
+  else { 
+    filtered = operativos; 
+    btnLabel = 'Agregar CPR / CPM'; 
+    btnAs = Roles.CPR; 
+  }
+
   const rows = filtered.map(u => {
     const canManage = Permissions.canManageUser(actor, u);
     const canToggle = Permissions.canToggleAprobador(actor, u);
@@ -2282,19 +2297,30 @@ async function usuariosView(){
         (u.es_aprobador ? '✓ Aprobador' : 'Designar Aprobador') + '</button> ' + actions;
     }
     
-    let aprobStatus = u.aprobado ? '<span class="badge green">Aprobado</span>' : '<span class="badge warn">Pendiente</span>';
+    // Botón de aprobar si está pendiente y soy Master
     if (!u.aprobado && Permissions.isMaster(actor)) {
-        actions = `<button class="btn ok" style="padding:6px 10px;font-size:11.5px" data-action="aprobarUsuario" data-id="${u.id}">✓ Aprobar</button> ` + actions;
+        actions = `<button class="btn ok" style="padding:6px 10px;font-size:11.5px;animation:pulseGlow 2s infinite" data-action="aprobarUsuario" data-id="${u.id}">✓ Aprobar Cuenta</button> ` + actions;
     }
 
     return '<tr><td>' + (imgSrc ? '<img src="' + esc(imgSrc) + '" style="width:34px;height:34px;border-radius:50%;object-fit:cover;border:2px solid var(--accent)" alt="">' : '<span class="small">—</span>') + '</td>' +
       '<td>' + esc(u.nombre) + ' ' + esc(u.apellido) + '</td><td>' + esc(u.ci) + '</td><td>' + esc(u.telefono) + '</td>' +
       '<td>' + esc(u.rol) + (u.es_aprobador ? ' <span class="badge master" style="font-size:9.5px">APROBADOR</span>' : '') + '</td>' +
       '<td>' + esc(u.estado || '') + (u.municipio ? ' / ' + esc(u.municipio) : '') + '</td>' +
-      '<td>' + aprobStatus + '</td>' +
+      '<td>' + (u.aprobado ? '<span class="badge green">Aprobado</span>' : '<span class="badge warn">Pendiente</span>') + '</td>' +
       '<td>' + actions + '</td></tr>';
   }).join('');
   
+  // Bloque de pestañas de usuario
+  let tabsHtml = '<div class="tabs section">';
+  if (Permissions.isMaster(actor)) {
+      tabsHtml += `<button type="button" class="tab ${tab==='pendientes'?'active':''}" data-action="setUserTab" data-tab="pendientes">⏳ Por Aprobar (${pendientes.length})</button>`;
+  }
+  tabsHtml += `<button type="button" class="tab ${tab==='operativos'?'active':''}" data-action="setUserTab" data-tab="operativos">CPR / CPM (${operativos.length})</button>`;
+  if (canSeeNacTab) {
+      tabsHtml += `<button type="button" class="tab ${tab==='nacionales'?'active':''}" data-action="setUserTab" data-tab="nacionales">Nacionales (${nacionales.length})</button>`;
+  }
+  tabsHtml += '</div>';
+
   const masterBlock = Permissions.isMaster(actor) && masters.length
     ? '<div class="section"><h3 style="margin-bottom:8px">Cuenta Master</h3><div class="table-responsive"><table><thead><tr><th>Foto</th><th>Nombre</th><th>CI</th><th>Teléfono</th><th>Rol</th><th>Ubicación</th><th>Estatus</th><th>Acciones</th></tr></thead><tbody>' +
       masters.map(u => {
@@ -2303,20 +2329,17 @@ async function usuariosView(){
           '<td>' + esc(u.nombre) + ' ' + esc(u.apellido) + '</td><td>' + esc(u.ci) + '</td><td>' + esc(u.telefono) + '</td>' +
           '<td><span class="badge master">' + esc(u.rol) + '</span></td><td>—</td><td><span class="badge green">Aprobado</span></td><td><span class="small">—</span></td></tr>';
       }).join('') + '</tbody></table></div></div>' : '';
-  const tabsHtml = canSeeNacTab
-    ? '<div class="tabs section">' +
-        '<button type="button" class="tab ' + (tab==='nacionales'?'active':'') + '" data-action="setUserTab" data-tab="nacionales">Nacionales (' + nacionales.length + ')</button>' +
-        '<button type="button" class="tab ' + (tab==='operativos'?'active':'') + '" data-action="setUserTab" data-tab="operativos">CPR / CPM (' + operativos.length + ')</button>' +
-      '</div>' : '';
+
   const aprobadoresCount = nacionales.filter(u => u.es_aprobador).length;
   const aprobNote = tab === 'nacionales'
-    ? '<div class="readonly-banner" style="margin-top:14px">🔑 <b>' + aprobadoresCount + '</b> aprobador(es) designado(s). Solo usuarios con el rol <b>Nacional</b> y la marca <b>Aprobador</b> pueden aprobar/rechazar registros.</div>'
+    ? '<div class="readonly-banner" style="margin-top:14px">🔑 <b>' + aprobadoresCount + '</b> aprobador(es) designado(s). Solo usuarios con el rol <b>Nacional</b> y la marca <b>Aprobador</b> pueden aprobar/rechazar registros de militantes.</div>'
     : '';
+
   return '<div class="card"><h2>Gestión de Usuarios</h2>' + tabsHtml +
-    '<div class="section"><button class="btn ok" data-action="abrirRegistro" data-as="' + esc(btnAs) + '">' + esc(btnLabel) + '</button>' + limitNote + '</div>' +
+    '<div class="section"><button class="btn ok" data-action="abrirRegistro" data-as="' + esc(btnAs) + '">' + esc(btnLabel) + '</button></div>' +
     aprobNote +
     '<div class="table-responsive"><table><thead><tr><th>Foto</th><th>Nombre</th><th>CI</th><th>Teléfono</th><th>Rol</th><th>Ubicación</th><th>Estatus</th><th>Acciones</th></tr></thead>' +
-    '<tbody>' + (rows || '<tr><td colspan="8">Sin usuarios registrados.</td></tr>') + '</tbody></table></div>' + masterBlock + '</div>';
+    '<tbody>' + (rows || '<tr><td colspan="8" style="text-align:center;padding:20px">No hay usuarios en esta categoría.</td></tr>') + '</tbody></table></div>' + masterBlock + '</div>';
 }
 
 function abrirRegistro(asRol){
@@ -2363,9 +2386,10 @@ async function toggleAprobador(id, value){
 async function aprobarUsuario(id){
   try{
     await Api.aprobarUsuario(id);
-    ok('Usuario aprobado con éxito. Ya puede iniciar sesión.');
-    renderTabContent();
-  }catch(e){ err(e.message); }
+    ok('✅ Usuario aprobado con éxito. Ya puede iniciar sesión.');
+    renderTabContent(); // Recarga la tabla
+    renderTabs(); // Recarga los contadores de las pestañas
+  }catch(e){ err(e.message || 'Error al aprobar usuario.'); }
 }
 
 /* ---------- USUARIOS ACTIVOS ---------- */
@@ -2473,7 +2497,7 @@ const Actions = {
   triggerCamera(el){ const i = document.getElementById('cam_' + el.dataset.id); if(i) i.click(); },
   triggerFile(el){ const i = document.getElementById('file_' + el.dataset.id); if(i) i.click(); },
   goRecover(){ state.view = 'recover'; render(); },
-  goPublicRegister(){ state.view = 'register'; state.user = null; render(); }, // <-- PERMITE REGISTRO PÚBLICO
+  goPublicRegister(){ state.view = 'register'; state.user = null; render(); },
   volverInicio(){ volverInicio(); },
   doLogin(){ doLogin(); },
   doRegister(){ doRegister(); },
@@ -2504,7 +2528,7 @@ const Actions = {
   cambiarPw(el){ cambiarPw(el.dataset.id); },
   eliminarUsuario(el){ eliminarUsuario(el.dataset.id); },
   toggleAprobador(el){ toggleAprobador(el.dataset.id, el.dataset.value === '1'); },
-  aprobarUsuario(el){ aprobarUsuario(el.dataset.id); }, // <-- NUEVA ACCIÓN
+  aprobarUsuario(el){ aprobarUsuario(el.dataset.id); },
   setHistFiltro(el){ setHistFiltro(el.dataset.filtro); },
   setApprovalFilter(el){ setApprovalFilter(el.dataset.filtro); },
   aprobarRegistro(el){ aprobarRegistro(el.dataset.id); },
@@ -2549,7 +2573,7 @@ document.addEventListener('change', e => {
 });
 
 /* ============================================================
-   DO LOGIN
+   DO LOGIN (Mejorado con manejo de errores de Aprobación)
 ============================================================ */
 async function doLogin(){
   if(state.busy) return;
@@ -2560,20 +2584,24 @@ async function doLogin(){
   const pw = pwEl.value;
   if(!ci || !pw) return err('Complete todos los campos.');
   if(!isValidCI(ci)) return err('Cédula inválida (5 a 9 dígitos).');
+  
   state.busy = true;
   let loginOk = false;
   try{
     state.user = await Api.login(ci, pw);
     state.view = 'dashboard';
     state.tab = (state.user.rol === Roles.CPR || state.user.rol === Roles.CPM) ? 'cargar' : 'inicio';
-    state.batchCount = 0; state.batchTipo = null; state.userTab = 'operativos';
+    state.batchCount = 0; state.batchTipo = null; 
+    state.userTab = 'pendientes'; // Al loguear como master, mostrar pendientes por defecto
     state.approvalFilter = 'pendiente'; state.approvalEstado = ''; state.approvalMunicipio = '';
     loginOk = true;
     ok('Bienvenido, ' + state.user.nombre);
   }catch(e){
     let msg = e.message || 'Credenciales incorrectas.';
-    if(e.status === 400 || e.status === 403 || msg.toLowerCase().includes('requirements') || msg.toLowerCase().includes('rule') || msg.toLowerCase().includes('unauthorized')) {
-        msg = 'Credenciales inválidas o cuenta pendiente de aprobación por un Master.';
+    
+    // Capturamos el error 400 o 403 de PocketBase (Falló la Auth rule)
+    if(e.status === 400 || e.status === 403 || (msg && (msg.toLowerCase().includes('requirements') || msg.toLowerCase().includes('rule') || msg.toLowerCase().includes('unauthorized')))) {
+        msg = 'Credenciales inválidas o tu cuenta está PENDIENTE DE APROBACIÓN.';
     }
     err(msg); 
   }
@@ -2586,7 +2614,6 @@ async function doLogin(){
 ============================================================ */
 (async function init(){
   try{
-    // await ensureBootstrapMaster(); // <-- DESACTIVADO: Se crea directo en PocketBase
     await Api.history.purge();
     const stored = DB.get('session', null);
     if(stored && stored.id){
@@ -2595,6 +2622,7 @@ async function doLogin(){
         state.user = u;
         state.view = 'dashboard';
         state.tab = (u.rol === Roles.CPR || u.rol === Roles.CPM) ? 'cargar' : 'inicio';
+        if(u.rol === Roles.MASTER) state.userTab = 'pendientes';
       } else { DB.remove('session'); }
     }
   }catch(e){ console.warn('init', e); }
